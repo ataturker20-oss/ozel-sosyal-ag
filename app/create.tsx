@@ -2,15 +2,43 @@ import { Ionicons } from '@expo/vector-icons';
 import { ResizeMode, Video } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
-import { ActivityIndicator, Alert, Dimensions, FlatList, Image, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { addDoc, collection, doc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import React, { useCallback, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  Dimensions,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar, // EKLENDİ
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View
+} from 'react-native';
 import { auth, db, storage } from '../firebaseConfig';
 
 const { width } = Dimensions.get('window');
+
+const MOODS = [
+  { id: 'fire', label: 'Ateş', icon: '🔥' },
+  { id: 'happy', label: 'Mutlu', icon: '😊' },
+  { id: 'tired', label: 'Yorgun', icon: '😴' },
+  { id: 'coffee', label: 'Keyif', icon: '☕' },
+  { id: 'party', label: 'Parti', icon: '🥳' },
+  { id: 'gym', label: 'Spor', icon: '💪' },
+  { id: 'travel', label: 'Gezi', icon: '✈️' },
+  { id: 'work', label: 'İş', icon: '💻' },
+];
 
 export default function CreateScreen() {
   const router = useRouter();
@@ -18,20 +46,33 @@ export default function CreateScreen() {
   const [media, setMedia] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<'image' | 'video'>('image');
   const [caption, setCaption] = useState('');
-  
   const [location, setLocation] = useState<string | null>(null);
-  const [gettingLocation, setGettingLocation] = useState(false);
   const [mood, setMood] = useState<string | null>(null);
-  
-  const [moodModalVisible, setMoodModalVisible] = useState(false);
-  const [shareModalVisible, setShareModalVisible] = useState(false);
-  
   const [uploading, setUploading] = useState(false);
-  const [storyDuration, setStoryDuration] = useState(1440); 
+  const [gettingLocation, setGettingLocation] = useState(false);
 
-  const moods = ["🔥 Ateş", "😊 Mutlu", "😴 Yorgun", "☕ Keyifli", "🥳 Parti", "💪 Spor", "✈️ Gezi", "💻 Çalışıyor", "🍔 Aç", "💔 Üzgün"];
+  // --- GERİ TUŞU YÖNETİMİ ---
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (media) {
+          Alert.alert("İptal Et", "Düzenlemeyi bırakıp çıkmak istiyor musun?", [
+            { text: "Hayır", style: "cancel" },
+            { text: "Evet", style: 'destructive', onPress: () => { setMedia(null); setCaption(''); } }
+          ]);
+          return true;
+        }
+        router.replace('/(tabs)');
+        return true;
+      };
 
-  // --- KRİTİK: Android İçin Güvenli Blob Çevirici ---
+      // YENİ YÖNTEM: subscription.remove() kullanımı
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => subscription.remove();
+
+    }, [media])
+  );
+
   const uriToBlob = (uri: string): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -43,260 +84,209 @@ export default function CreateScreen() {
     });
   };
 
-  const pickMedia = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) { Alert.alert("İzin Gerekli", "Galeri izni lazım."); return; }
-    
+  const processMediaResult = (result: ImagePicker.ImagePickerResult) => {
+    if (!result.canceled) {
+      const asset = result.assets[0];
+      setMedia(asset.uri);
+      setMediaType(asset.type === 'video' ? 'video' : 'image');
+    }
+  };
+
+  const pickFromGallery = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.All,
-      allowsEditing: true, // Düzenleme ekranını aç
-      quality: 0.5, // Hız için kaliteyi düşür
-      videoMaxDuration: 60,
+      allowsEditing: false, 
+      quality: 0.8,
     });
+    processMediaResult(result);
+  };
 
-    if (!result.canceled) {
-      setMedia(result.assets[0].uri);
-      setMediaType(result.assets[0].type === 'video' ? 'video' : 'image');
-    }
+  const openCamera = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) { Alert.alert("İzin Gerekli", "Kamera izni gerekli."); return; }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: false,
+      quality: 0.8,
+    });
+    processMediaResult(result);
   };
 
   const getLocation = async () => {
     setGettingLocation(true);
     try {
       let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') { Alert.alert("Hata", "Konum izni verilmedi."); setGettingLocation(false); return; }
+      if (status !== 'granted') return;
       let locationData = await Location.getCurrentPositionAsync({});
       let address = await Location.reverseGeocodeAsync(locationData.coords);
       if (address.length > 0) {
-        const city = address[0].city || address[0].subregion;
-        const district = address[0].district || address[0].name;
-        setLocation(`${district}, ${city}`);
+        const addr = address[0];
+        const locString = `${addr.district || addr.name || ''}, ${addr.city || addr.region || ''}`;
+        setLocation(locString);
       }
-    } catch (error) { Alert.alert("Hata", "Konum alınamadı."); } 
-    finally { setGettingLocation(false); }
+    } catch (error) { } finally { setGettingLocation(false); }
   };
 
-  const finalizeShare = async (type: 'story' | 'wall') => {
-    setShareModalVisible(false);
+  const handleShare = async () => {
+    if (!media) return;
     setUploading(true);
-
     try {
       const user = auth.currentUser;
-      if (!user) { Alert.alert("Hata", "Giriş yapmalısın."); setUploading(false); return; }
-
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      let currentUsername = "Anonim";
-      if (userDocSnap.exists()) { currentUsername = userDocSnap.data().username || user.email?.split('@')[0]; }
-
-      // 1. BLOB YAP
-      const blob = await uriToBlob(media!);
-
-      const extension = mediaType === 'video' ? 'mp4' : 'jpg';
-      const filename = `posts/${user.uid}/${Date.now()}.${extension}`;
+      if (!user) throw new Error("Giriş yok");
       
+      const userDoc = await getDoc(doc(db, "users", user.uid));
+      const username = userDoc.exists() ? userDoc.data().username : "Anonim";
+
+      const blob = await uriToBlob(media);
+      const ext = mediaType === 'video' ? 'mp4' : 'jpg';
+      const filename = `posts/${user.uid}/${Date.now()}.${ext}`;
       const storageRef = ref(storage, filename);
-      
-      // 2. YÜKLE
       await uploadBytes(storageRef, blob);
-      
-      // 3. TEMİZLE
       // @ts-ignore
-      blob.close(); 
-
+      blob.close();
       const downloadUrl = await getDownloadURL(storageRef);
 
-      const postData = {
-        imageUrl: downloadUrl,
-        mediaType: mediaType,
-        userId: user.uid,
-        userEmail: user.email,
-        username: currentUsername,
-        location: location,
-        mood: mood,
-        createdAt: serverTimestamp(),
-      };
+      await addDoc(collection(db, "posts"), {
+        imageUrl: downloadUrl, mediaType, caption, userId: user.uid, username,
+        location, mood, likes: 0, likedBy: [], commentCount: 0,
+        createdAt: serverTimestamp(), type: 'wall'
+      });
 
-      if (type === 'story') {
-        const expiresAt = new Date();
-        expiresAt.setMinutes(expiresAt.getMinutes() + storyDuration);
-        await addDoc(collection(db, "stories"), { ...postData, caption: caption, expiresAt: expiresAt, durationMin: storyDuration, type: 'story' });
-      } else {
-        await addDoc(collection(db, "posts"), { ...postData, caption: caption, likes: 0, type: 'wall' });
-      }
-
-      Alert.alert("Başarılı", "Paylaşıldı! 🚀");
       setMedia(null); setCaption(''); setLocation(null); setMood(null);
-      router.replace('/(tabs)'); 
-
-    } catch (error: any) { 
-        Alert.alert("Hata", "Yükleme başarısız. İnternetini kontrol et."); 
-    } 
+      router.replace('/(tabs)');
+    } catch (error: any) { Alert.alert("Hata", error.message); } 
     finally { setUploading(false); }
   };
 
-  const onNextPress = () => {
-    if (!media) { Alert.alert("Medya Yok", "Lütfen önce bir görsel seç."); return; }
-    setShareModalVisible(true);
-  };
-
   return (
-    <KeyboardAvoidingView 
-      style={{ flex: 1, backgroundColor: '#050505' }} 
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <View style={styles.container}>
-        
-        {/* HEADER */}
-        <View style={styles.header}>
-           {/* Geri butonu kaldırıldı, çünkü tabs içindeyiz */}
-           <Text style={styles.headerTitle}>Oluştur</Text>
-           <TouchableOpacity 
-              style={[styles.headerNextBtn, (!media || uploading) && styles.disabledBtn]} 
-              onPress={onNextPress}
-              disabled={!media || uploading}
-           >
-              {uploading ? <ActivityIndicator size="small" color="#000" /> : <Text style={styles.headerNextText}>İlerle</Text>}
+    <View style={styles.container}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+
+      {!media ? (
+        <SafeAreaView style={styles.emptyContainer}>
+           <TouchableOpacity style={styles.closeButtonAbs} onPress={() => router.replace('/(tabs)')}>
+              <Ionicons name="close" size={32} color="#fff" />
            </TouchableOpacity>
-        </View>
-
-        <ScrollView contentContainerStyle={{ paddingBottom: 100, paddingTop: 20 }}>
-          
-          <TouchableOpacity onPress={pickMedia} activeOpacity={0.9} style={styles.canvasContainer}>
-            {media ? (
-              <>
-                {mediaType === 'video' ? (
-                  <Video source={{ uri: media }} style={styles.canvasMedia} useNativeControls resizeMode={ResizeMode.COVER} isLooping shouldPlay />
-                ) : ( <Image source={{ uri: media }} style={styles.canvasMedia} /> )}
-                <View style={styles.editIconBadge}><Ionicons name="create" size={20} color="#fff" /></View>
-              </>
-            ) : (
-              <View style={styles.emptyCanvas}>
-                 <View style={styles.iconGlow}><Ionicons name="add" size={50} color="#fff" /></View>
-                 <Text style={styles.emptyTitle}>Medyayı Seç</Text>
-                 <Text style={styles.emptySubtitle}>Fotoğraf veya Video Yüklemek İçin Dokun</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-
-          {media && (
-            <View style={styles.optionsContainer}>
-              <View style={styles.captionInputWrapper}>
-                  <TextInput 
-                    style={styles.captionInput} 
-                    placeholder="Bir şeyler yaz... (İsteğe bağlı)" 
-                    placeholderTextColor="#555" 
-                    value={caption} 
-                    onChangeText={setCaption} 
-                    multiline 
-                    scrollEnabled={false} 
-                  />
-              </View>
-
-              <View style={styles.toolsRow}>
-                  <TouchableOpacity style={[styles.toolBtn, location && styles.activeToolBtn]} onPress={getLocation} disabled={gettingLocation}>
-                    {gettingLocation ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="location-sharp" size={20} color={location ? "#000" : "#fff"} />}
-                    {location && <Text style={styles.activeToolText} numberOfLines={1}>{location}</Text>}
-                  </TouchableOpacity>
-
-                  <TouchableOpacity style={[styles.toolBtn, mood && styles.activeToolBtn]} onPress={() => setMoodModalVisible(true)}>
-                    <Ionicons name="happy" size={20} color={mood ? "#000" : "#fff"} />
-                    {mood && <Text style={styles.activeToolText}>{mood.split(' ')[1]}</Text>} 
-                  </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-        </ScrollView>
-
-        <Modal visible={shareModalVisible} transparent={true} animationType="slide" onRequestClose={() => setShareModalVisible(false)}>
-           <TouchableOpacity style={styles.modalOverlay} onPress={() => setShareModalVisible(false)}>
-              <View style={styles.shareSheetContent}>
-                 <View style={styles.sheetHandle} />
-                 <Text style={styles.sheetTitle}>Nereye Gönderilsin?</Text>
-
-                 <View style={styles.optionSection}>
-                    <TouchableOpacity style={styles.shareOptionBtn} onPress={() => finalizeShare('story')}>
-                       <View style={[styles.iconBox, {backgroundColor: '#FF3B30'}]}><Ionicons name="timer-outline" size={24} color="#fff" /></View>
-                       <View style={{flex:1}}><Text style={styles.optionTitle}>Hikayene Ekle</Text><Text style={styles.optionSubtitle}>24 Saat Sonra Silinir</Text></View>
-                       <Ionicons name="chevron-forward" size={24} color="#666" />
-                    </TouchableOpacity>
-                    <View style={styles.durationChips}>
-                       {[5, 60, 1440].map((m) => (
-                          <TouchableOpacity key={m} onPress={() => setStoryDuration(m)} style={[styles.dChip, storyDuration === m && styles.dChipActive]}>
-                             <Text style={[styles.dChipText, storyDuration === m && {color:'#fff'}]}>{m === 5 ? "🔥 5dk" : (m === 60 ? "1 Saat" : "24 Saat")}</Text>
-                          </TouchableOpacity>
-                       ))}
+           
+           <View style={styles.centerContent}>
+              <Text style={styles.title}>Oluştur</Text>
+              <View style={styles.actionButtonsRow}>
+                 <TouchableOpacity style={styles.bigButton} onPress={pickFromGallery}>
+                    <View style={[styles.iconCircle, {backgroundColor: '#1A1A1A'}]}>
+                       <Ionicons name="images" size={30} color="#fff" />
                     </View>
-                 </View>
-
-                 <View style={styles.divider} />
-
-                 <TouchableOpacity style={styles.shareOptionBtn} onPress={() => finalizeShare('wall')}>
-                    <View style={[styles.iconBox, {backgroundColor: '#fff'}]}><Ionicons name="grid-outline" size={24} color="#000" /></View>
-                    <View style={{flex:1}}><Text style={styles.optionTitle}>Duvarında Paylaş</Text><Text style={styles.optionSubtitle}>Profilinde Kalıcı Olur</Text></View>
-                    <Ionicons name="chevron-forward" size={24} color="#666" />
+                    <Text style={styles.btnText}>Galeri</Text>
                  </TouchableOpacity>
-
+                 
+                 <TouchableOpacity style={styles.bigButton} onPress={openCamera}>
+                    <View style={[styles.iconCircle, {backgroundColor: '#FF3B30'}]}>
+                       <Ionicons name="camera" size={30} color="#fff" />
+                    </View>
+                    <Text style={styles.btnText}>Kamera</Text>
+                 </TouchableOpacity>
               </View>
-           </TouchableOpacity>
-        </Modal>
+           </View>
+        </SafeAreaView>
+      ) : (
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex:1}}>
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+            <View style={styles.editorContainer}>
+               
+               <View style={styles.fullScreenMedia}>
+                  {mediaType === 'video' ? (
+                    <Video source={{ uri: media }} style={{width: '100%', height: '100%'}} resizeMode={ResizeMode.CONTAIN} shouldPlay isLooping isMuted />
+                  ) : (
+                    <Image source={{ uri: media }} style={{width: '100%', height: '100%'}} resizeMode="contain" />
+                  )}
+               </View>
 
-        <Modal visible={moodModalVisible} transparent={true} animationType="slide" onRequestClose={() => setMoodModalVisible(false)}>
-           <TouchableOpacity style={styles.modalOverlay} onPress={() => setMoodModalVisible(false)}>
-              <View style={styles.moodContent}>
-                 <Text style={styles.sheetTitle}>His Durumu</Text>
-                 <FlatList data={moods} numColumns={3} keyExtractor={item => item} renderItem={({item}) => (
-                      <TouchableOpacity style={styles.moodItem} onPress={() => { setMood(item); setMoodModalVisible(false); }}>
-                         <Text style={styles.moodText}>{item}</Text>
-                      </TouchableOpacity>
-                   )} />
-              </View>
-           </TouchableOpacity>
-        </Modal>
+               <SafeAreaView style={styles.topOverlay}>
+                  <TouchableOpacity onPress={() => setMedia(null)} style={styles.iconBtn}>
+                     <Ionicons name="chevron-back" size={28} color="#fff" />
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.shareBtn, uploading && {opacity: 0.5}]} 
+                    onPress={handleShare}
+                    disabled={uploading}
+                  >
+                    {uploading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.shareText}>Paylaş</Text>}
+                  </TouchableOpacity>
+               </SafeAreaView>
 
-      </View>
-    </KeyboardAvoidingView>
+               <View style={styles.contentOverlay}>
+                  <View style={styles.captionBox}>
+                     <TextInput 
+                        style={styles.captionInput} 
+                        placeholder="Bir şeyler yaz..." 
+                        placeholderTextColor="rgba(255,255,255,0.7)"
+                        multiline
+                        maxLength={250}
+                        value={caption}
+                        onChangeText={setCaption}
+                     />
+                  </View>
+
+                  <View style={styles.tagsContainer}>
+                     {location && (
+                       <TouchableOpacity onPress={() => setLocation(null)} style={styles.tagChip}>
+                          <Ionicons name="location" size={14} color="#FF3B30" />
+                          <Text style={styles.tagText}>{location}</Text>
+                       </TouchableOpacity>
+                     )}
+                     {mood && (
+                       <TouchableOpacity onPress={() => setMood(null)} style={[styles.tagChip, {backgroundColor: 'rgba(0,122,255,0.3)'}]}>
+                          <Text style={styles.tagText}>{mood}</Text>
+                       </TouchableOpacity>
+                     )}
+                  </View>
+
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.toolsScroll} contentContainerStyle={{alignItems:'center'}}>
+                     <TouchableOpacity style={styles.toolCircle} onPress={getLocation} disabled={gettingLocation}>
+                        {gettingLocation ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="location-sharp" size={24} color="#fff" />}
+                     </TouchableOpacity>
+                     
+                     <View style={styles.divider} />
+                     
+                     {MOODS.map(m => (
+                       <TouchableOpacity key={m.id} style={styles.moodEmojiBtn} onPress={() => setMood(`${m.icon} ${m.label}`)}>
+                          <Text style={{fontSize: 22}}>{m.icon}</Text>
+                       </TouchableOpacity>
+                     ))}
+                  </ScrollView>
+               </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </KeyboardAvoidingView>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#050505' }, 
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingTop: 50, paddingBottom: 15, borderBottomWidth: 1, borderBottomColor: '#1A1A1A' },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
-  headerIconBtn: { padding: 5 },
-  headerNextBtn: { backgroundColor: '#fff', paddingVertical: 8, paddingHorizontal: 15, borderRadius: 20 },
-  headerNextText: { color: '#000', fontWeight: 'bold', fontSize: 14 },
-  disabledBtn: { backgroundColor: '#333', opacity: 0.7 }, 
-  canvasContainer: { width: width - 30, height: width * 1.2, backgroundColor: '#111', alignSelf: 'center', borderRadius: 35, overflow: 'hidden', borderWidth: 1, borderColor: '#222', marginBottom: 25 },
-  canvasMedia: { width: '100%', height: '100%' },
-  emptyCanvas: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F0F0F' },
-  iconGlow: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#1A1A1A', justifyContent: 'center', alignItems: 'center', marginBottom: 20, borderWidth: 1, borderColor: '#333' },
-  emptyTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 5 },
-  emptySubtitle: { color: '#666', fontSize: 14 },
-  editIconBadge: { position: 'absolute', top: 15, right: 15, backgroundColor: 'rgba(0,0,0,0.6)', padding: 8, borderRadius: 20 },
-  optionsContainer: { paddingHorizontal: 25 },
-  captionInputWrapper: { marginBottom: 20, borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 10 },
-  captionInput: { color: '#fff', fontSize: 18, minHeight: 40 },
-  toolsRow: { flexDirection: 'row', gap: 12 },
-  toolBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#111', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 25, borderWidth: 1, borderColor: '#333', gap: 8 },
-  activeToolBtn: { backgroundColor: '#fff' },
-  activeToolText: { color: '#000', fontWeight: 'bold', fontSize: 12, maxWidth: 100 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'flex-end' },
-  shareSheetContent: { backgroundColor: '#151515', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 50 },
-  sheetHandle: { width: 40, height: 4, backgroundColor: '#444', alignSelf: 'center', borderRadius: 2, marginBottom: 20 },
-  sheetTitle: { color: '#fff', fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 25 },
-  optionSection: { marginBottom: 10 },
-  shareOptionBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 15, borderRadius: 20 },
-  iconBox: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
-  optionTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  optionSubtitle: { color: '#666', fontSize: 13 },
-  divider: { height: 1, backgroundColor: '#333', marginVertical: 10 },
-  durationChips: { flexDirection: 'row', marginLeft: 65, marginTop: 5, gap: 10 },
-  dChip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 15, backgroundColor: '#222', borderWidth: 1, borderColor: '#333' },
-  dChipActive: { backgroundColor: '#FF3B30', borderColor: '#FF3B30' },
-  dChipText: { color: '#666', fontSize: 11, fontWeight: 'bold' },
-  moodContent: { backgroundColor: '#1A1A1A', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, height: '45%' },
-  moodItem: { flex: 1, margin: 5, padding: 15, backgroundColor: '#252525', borderRadius: 15, alignItems: 'center' },
-  moodText: { color: '#fff', fontSize: 13, fontWeight: 'bold' }
+  container: { flex: 1, backgroundColor: '#000' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  closeButtonAbs: { position: 'absolute', top: 50, left: 20, zIndex: 10, padding: 10 },
+  centerContent: { width: '100%', alignItems: 'center', gap: 40 },
+  title: { color: '#fff', fontSize: 24, fontWeight: 'bold', letterSpacing: 1 },
+  actionButtonsRow: { flexDirection: 'row', gap: 30 },
+  bigButton: { alignItems: 'center', gap: 10 },
+  iconCircle: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#333' },
+  btnText: { color: '#888', fontSize: 16, fontWeight: '500' },
+  editorContainer: { flex: 1, backgroundColor: '#000' },
+  fullScreenMedia: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: -1 },
+  topOverlay: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingTop: Platform.OS === 'android' ? 40 : 10 },
+  iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  shareBtn: { backgroundColor: '#FF3B30', paddingVertical: 8, paddingHorizontal: 20, borderRadius: 20 },
+  shareText: { color: '#fff', fontWeight: 'bold' },
+  contentOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingBottom: 20, paddingHorizontal: 15 },
+  captionBox: { backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 15, padding: 15, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  captionInput: { color: '#fff', fontSize: 16, maxHeight: 100 },
+  tagsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 15 },
+  tagChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.2)', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 20, gap: 5 },
+  tagText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  toolsScroll: { flexGrow: 0 },
+  toolCircle: { width: 45, height: 45, borderRadius: 25, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center', marginRight: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  divider: { width: 1, height: 25, backgroundColor: 'rgba(255,255,255,0.3)', marginHorizontal: 5 },
+  moodEmojiBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center', marginRight: 2 },
 });

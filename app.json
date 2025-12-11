@@ -3,13 +3,12 @@
     "name": "Soce",
     "slug": "ozel-sosyal-ag",
     "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "scheme": "soce",
-    "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Gönderilerinize konum eklemek için konum izni gereklidir."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -18,32 +17,21 @@
         "softwareKeyboardLayoutMode": "resize"
       },
       "package": "com.turkerata.ozelsosyalag",
-      "edgeToEdgeEnabled": true
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
     },
     "plugins": [
       "expo-router",
       [
-        "expo-splash-screen",
+        "expo-location",
         {
-          "image": "./assets/splash.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#000000"
+          "locationWhenInUsePermission": "Gönderilerinize konum eklemek için konum izni gereklidir."
         }
       ]
-    ],
-    "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    },
-    "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "2d7e7ae5-9733-46a3-8157-50715952cb2f"
-      }
-    }
+    ]
+    
   }
 }
